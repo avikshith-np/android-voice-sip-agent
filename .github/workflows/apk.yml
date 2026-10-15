@@ -25,8 +25,9 @@ jobs:
       - name: Android SDK components
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKM" --licenses > /dev/null
-          "$SDKM" --install "ndk;28.2.13676358" "platforms;android-37" > /dev/null
+          yes | "$SDKM" --licenses > /dev/null || true
+          # The compile SDK platform is fetched by the Android Gradle plugin; the NDK is pinned by the native script.
+          "$SDKM" --install "ndk;28.2.13676358" > /dev/null
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Native build tools
