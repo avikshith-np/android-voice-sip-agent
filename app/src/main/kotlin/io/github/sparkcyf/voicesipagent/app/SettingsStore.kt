@@ -36,6 +36,8 @@ data class GatewaySettings(
     val inboundTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
+    /** SIM slot (1-based) the gateway owns on a dual-SIM phone; 0 = any SIM. */
+    val simSlot: Int = 0,
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
@@ -45,7 +47,7 @@ data class GatewaySettings(
     val sipConfigured: Boolean get() = server.isNotBlank() && username.isNotBlank() && password.isNotEmpty()
 
     override fun toString() =
-        "GatewaySettings(takeover=$takeover muteEarpiece=$muteEarpiece stack=$sipStack server=$server:$port/$sipTransport srtp=$srtp user=$username target=$inboundTarget)"
+        "GatewaySettings(takeover=$takeover muteEarpiece=$muteEarpiece stack=$sipStack server=$server:$port/$sipTransport srtp=$srtp user=$username target=$inboundTarget sim=${if (simSlot > 0) simSlot else "any"})"
 }
 
 enum class SipStack(val id: String) {
@@ -80,6 +82,7 @@ class SettingsStore(context: Context) {
         localSipPort = prefs.getInt("local_sip_port", 5062),
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
+        simSlot = prefs.getInt("sim_slot", 0).coerceAtLeast(0),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
@@ -102,6 +105,7 @@ class SettingsStore(context: Context) {
             .putInt("local_sip_port", s.localSipPort)
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
+            .putInt("sim_slot", s.simSlot.coerceAtLeast(0))
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)

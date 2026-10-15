@@ -116,6 +116,7 @@ class GatewayRuntime private constructor(context: Context) {
     val cellular = CellularEndpoint(app,
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
+        gatewaySimSlot = { settings.simSlot },
     )
     /** [SipUserAgent] or [PjsipEndpoint], per [GatewaySettings.sipStack]. */
     private var sip: CallEndpoint? = null
@@ -377,7 +378,10 @@ class GatewayRuntime private constructor(context: Context) {
             componentEnabled(GatewayDialerActivity::class.java, false) && componentEnabled(GatewayDialerService::class.java, true),
             componentEnabled(GatewayInCallService::class.java, true),
             p?.get(HealthKeys.MANAGE_ONGOING_CALLS) == true, p?.get(HealthKeys.COMPANION_OVERRIDE) == true,
-            listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE).all {
+            // READ_PHONE_NUMBERS: on a Nothing Phone 3a (Android 16) incoming SIM calls were never claimed
+            // ("leaving incoming call … to the phone app") until it was granted.
+            listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.READ_PHONE_NUMBERS).all {
                 app.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
             })
         val access = requirements.ready

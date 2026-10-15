@@ -204,6 +204,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var password by remember(cur) { mutableStateOf(cur.password) }
     var target by remember(cur) { mutableStateOf(cur.inboundTarget) }
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
+    var simSlot by remember(cur) { mutableStateOf(if (cur.simSlot > 0) cur.simSlot.toString() else "") }
     var domain by remember(cur) { mutableStateOf(cur.domain) }
     var stack by remember(cur) { mutableStateOf(cur.sipStack) }
     var transport by remember(cur) { mutableStateOf(SipTransport.of(cur.sipTransport) ?: SipTransport.UDP) }
@@ -233,11 +234,13 @@ private fun SettingsSection(rt: GatewayRuntime) {
         )
         Field("Cellular inbound -> SIP target (blank = username)", target) { target = it }
         Field("Allowed dial-out prefixes (comma separated, empty = any)", prefixes) { prefixes = it }
+        Field("Gateway SIM slot (1, 2, …; empty = any SIM)", simSlot, KeyboardType.Number) { simSlot = it }
         Button(onClick = {
             rt.applySettings(
                 cur.copy(
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
                     inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
+                    simSlot = simSlot.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id,
                 ),
             )

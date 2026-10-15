@@ -10,7 +10,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.telecom.Call
+import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
 import io.github.sparkcyf.voicesipagent.voice.CallLeg
@@ -31,6 +33,9 @@ import java.util.concurrent.Executor
  * Only calls this endpoint owns are touched: inbound calls offered to the gateway, and outbound
  * calls it placed itself. Calls the user dials by hand, or that arrive while such a call is in
  * progress, are left to the stock phone app.
+ *
+ * On a dual-SIM phone [gatewaySimSlot] restricts the gateway to one SIM (1-based slot; 0 = any SIM):
+ * calls on the other SIM are never claimed, and gateway dial-outs are placed on the gateway SIM.
  */
 class CellularEndpoint(
     context: Context,
@@ -38,12 +43,14 @@ class CellularEndpoint(
     private val logger: (String) -> Unit,
     private val main: Handler = Handler(Looper.getMainLooper()),
     internal val audioExecutor: Executor = CellularLeg.audioExecutor,
+    private val gatewaySimSlot: () -> Int = { 0 },
 ) : CallEndpoint {
     override val name = "cellular"
 
     private val app = context.applicationContext
     private val telecom = app.getSystemService(TelecomManager::class.java)
     private val telephony = app.getSystemService(TelephonyManager::class.java)
+    private val subscriptions by lazy { app.getSystemService(SubscriptionManager::class.java) }
     private val statusListeners = CopyOnWriteArrayList<EndpointStatusListener>()
     private val ids = AtomicInteger(1)
     @Volatile private var handler: IncomingCallHandler? = null
@@ -141,11 +148,28 @@ class CellularEndpoint(
             leg.failPlacement(HangupCause.BUSY)
             return
         }
+        val extras = Bundle()
+        when (val sim = gatewaySim()) {
+            GatewaySim.Any -> Unit
+            GatewaySim.Unavailable -> {
+                log("gateway SIM ${gatewaySimSlot()} unavailable; refusing to dial")
+                leg.failPlacement(HangupCause.UNAVAILABLE)
+                return
+            }
+            is GatewaySim.Subscription -> {
+                val account = phoneAccountFor(sim.id) ?: run {
+                    log("no phone account for gateway SIM ${gatewaySimSlot()}; refusing to dial")
+                    leg.failPlacement(HangupCause.UNAVAILABLE)
+                    return
+                }
+                extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
+            }
+        }
         val p = Pending(leg, digits, SystemClock.elapsedRealtime())
         pending += p
         reportCalls()
         try {
-            telecom.placeCall(Uri.fromParts("tel", digits, null), Bundle())
+            telecom.placeCall(Uri.fromParts("tel", digits, null), extras)
             log("placeCall ${redactNumber(digits)} (leg ${leg.id})")
         } catch (e: SecurityException) {
             pending -= p
@@ -185,7 +209,7 @@ class CellularEndpoint(
         val number = details.handle?.schemeSpecificPart.orEmpty()
         when (details.callDirection) {
             Call.Details.DIRECTION_OUTGOING -> {
-                val match = pending.firstOrNull { sameNumber(it.digits, number) && isCellular(call) }
+                val match = pending.firstOrNull { sameNumber(it.digits, number) && isCellular(call) && onGatewaySim(call) }
                 if (match == null) {
                     log("ignoring user-placed outgoing call")
                     reconcileCalls(); reportCalls()
@@ -197,10 +221,18 @@ class CellularEndpoint(
             }
             Call.Details.DIRECTION_INCOMING -> {
                 val h = handler
-                if (h == null || !status.ready || call.telecomState != Call.STATE_RINGING || legs.isNotEmpty() ||
-                    pending.isNotEmpty() || hasForeignCall(except = call) || !isCellular(call) ||
-                    (number.isNotEmpty() && isEmergencyNumber(number))) {
-                    log("leaving incoming call ${redactNumber(number)} to the phone app")
+                val skip = when {
+                    h == null -> "no incoming handler"
+                    !status.ready -> "gateway not ready"
+                    call.telecomState != Call.STATE_RINGING -> "not ringing"
+                    legs.isNotEmpty() || pending.isNotEmpty() || hasForeignCall(except = call) -> "line busy"
+                    !isCellular(call) -> "not a SIM call"
+                    !onGatewaySim(call) -> "not on the gateway SIM"
+                    number.isNotEmpty() && isEmergencyNumber(number) -> "emergency number"
+                    else -> null
+                }
+                if (h == null || skip != null) {
+                    log("leaving incoming call ${redactNumber(number)} to the phone app ($skip)")
                     reconcileCalls(); reportCalls()
                     return
                 }
@@ -277,6 +309,37 @@ class CellularEndpoint(
         return runCatching { telecom.getPhoneAccount(account)?.hasCapabilities(
             android.telecom.PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) == true }.getOrDefault(false)
     }
+
+    private sealed interface GatewaySim {
+        /** No SIM restriction configured. */
+        data object Any : GatewaySim
+        /** A SIM is configured but its slot is empty, disabled, or unreadable: claim nothing. */
+        data object Unavailable : GatewaySim
+        data class Subscription(val id: Int) : GatewaySim
+    }
+
+    /** Resolved per use, so a swapped or disabled SIM is noticed without a restart. */
+    private fun gatewaySim(): GatewaySim {
+        val slot = gatewaySimSlot()
+        if (slot <= 0) return GatewaySim.Any
+        val id = runCatching { subscriptions?.getActiveSubscriptionInfoForSimSlotIndex(slot - 1)?.subscriptionId }
+            .getOrNull()
+        return if (id == null || id == SubscriptionManager.INVALID_SUBSCRIPTION_ID) GatewaySim.Unavailable
+        else GatewaySim.Subscription(id)
+    }
+
+    /** Fails closed: a call whose subscription cannot be determined is not on the gateway SIM. */
+    private fun onGatewaySim(call: Call): Boolean = when (val sim = gatewaySim()) {
+        GatewaySim.Any -> true
+        GatewaySim.Unavailable -> false
+        is GatewaySim.Subscription -> {
+            val account = call.details.accountHandle
+            account != null && runCatching { telephony.getSubscriptionId(account) }.getOrNull() == sim.id
+        }
+    }
+
+    private fun phoneAccountFor(subscriptionId: Int): PhoneAccountHandle? =
+        runCatching { telephony.createForSubscriptionId(subscriptionId).phoneAccountHandle }.getOrNull()
 
     private fun clearCalls(reason: String) {
         (legs.values + pending.map { it.leg }).distinct().forEach {

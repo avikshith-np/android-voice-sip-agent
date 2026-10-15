@@ -262,6 +262,9 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         private val PHONE_RUNTIME_PERMISSIONS = listOf(
             "android.permission.CALL_PHONE",
             "android.permission.READ_PHONE_STATE",
+            // Declared by the app but never requested at runtime; without it a Nothing Phone 3a (Android 16)
+            // never claimed incoming SIM calls.
+            "android.permission.READ_PHONE_NUMBERS",
         )
     }
 }

@@ -9,6 +9,8 @@ import android.telecom.Call
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
+import android.telephony.SubscriptionInfo
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
@@ -33,6 +35,9 @@ class CellularOwnershipTest {
     private val context = mock(Context::class.java)
     private val telecom = mock(TelecomManager::class.java)
     private val service = mock(GatewayInCallService::class.java)
+    private val telephony = mock(TelephonyManager::class.java)
+    private val subscriptions = mock(SubscriptionManager::class.java)
+    private var simSlot = 0
     private lateinit var endpoint: CellularEndpoint
     private lateinit var leg: CellularLeg
     private lateinit var call: Call
@@ -57,7 +62,8 @@ class CellularOwnershipTest {
             .postDelayed(any(Runnable::class.java), any(), anyLong())
         doReturn(context).`when`(context).applicationContext
         doReturn(telecom).`when`(context).getSystemService(TelecomManager::class.java)
-        doReturn(mock(TelephonyManager::class.java)).`when`(context).getSystemService(TelephonyManager::class.java)
+        doReturn(telephony).`when`(context).getSystemService(TelephonyManager::class.java)
+        doReturn(subscriptions).`when`(context).getSystemService(SubscriptionManager::class.java)
         val account = mock(PhoneAccount::class.java)
         doReturn(true).`when`(account).hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
         doReturn(account).`when`(telecom).getPhoneAccount(any(PhoneAccountHandle::class.java))
@@ -68,7 +74,7 @@ class CellularOwnershipTest {
             if (earlyLoss) onLost("socket died during open")
             if (openFailure) error("mode not settled")
             Handle(failHandleClose).also { opened = it }
-        }, {}, main, Executor { audioTasks += it })
+        }, {}, main, Executor { audioTasks += it }, gatewaySimSlot = { simSlot })
         endpoint.setReadiness(true, "ready")
         endpoint.setIncomingCallHandler { leg = it as CellularLeg }
         CellularEndpoint.attachService(service)
@@ -202,6 +208,76 @@ class CellularOwnershipTest {
         assertFalse(::leg.isInitialized)
         assertTrue(endpoint.hasCalls)
         verify(call, never()).disconnect()
+    }
+
+    /** Slot 2 holds subscription 2; calls report [callSubscription]. */
+    private fun dualSim(callSubscription: Int, slotOccupied: Boolean = true) {
+        simSlot = 2
+        val info = mock(SubscriptionInfo::class.java)
+        doReturn(2).`when`(info).subscriptionId
+        doReturn(if (slotOccupied) info else null).`when`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
+        doReturn(callSubscription).`when`(telephony).getSubscriptionId(any(PhoneAccountHandle::class.java))
+    }
+
+    @Test fun callOnTheOtherSimIsLeftToThePhoneApp() {
+        dualSim(callSubscription = 1)
+        endpoint.onCallAdded(service, call)
+        assertFalse(::leg.isInitialized)
+        assertTrue(endpoint.hasCalls)
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).disconnect()
+    }
+
+    @Test fun callOnTheGatewaySimIsClaimed() {
+        dualSim(callSubscription = 2)
+        endpoint.onCallAdded(service, call)
+        assertTrue(::leg.isInitialized)
+    }
+
+    @Test fun emptyGatewaySlotClaimsNothing() {
+        dualSim(callSubscription = 2, slotOccupied = false)
+        endpoint.onCallAdded(service, call)
+        assertFalse(::leg.isInitialized)
+        verify(call, never()).disconnect()
+    }
+
+    @Test fun unreadableCallSubscriptionClaimsNothing() {
+        dualSim(callSubscription = 2)
+        doThrow(SecurityException("no permission")).`when`(telephony).getSubscriptionId(any(PhoneAccountHandle::class.java))
+        endpoint.onCallAdded(service, call)
+        assertFalse(::leg.isInitialized)
+    }
+
+    @Test fun dialOutIsPlacedOnTheGatewaySim() {
+        dualSim(callSubscription = 2)
+        val sim2 = mock(TelephonyManager::class.java)
+        val account = mock(PhoneAccountHandle::class.java)
+        doReturn(sim2).`when`(telephony).createForSubscriptionId(2)
+        doReturn(account).`when`(sim2).phoneAccountHandle
+        mockStatic(SystemClock::class.java).use {
+            mockStatic(Uri::class.java).use { uris ->
+                mockConstruction(Bundle::class.java).use { bundles ->
+                    val number = "5551234567"
+                    val uri = mock(Uri::class.java)
+                    uris.`when`<Uri> { Uri.fromParts("tel", number, null) }.thenReturn(uri)
+                    endpoint.dial(number, Party(null))
+                    drainMain()
+                    verify(telecom).placeCall(eq(uri), any(Bundle::class.java))
+                    verify(bundles.constructed().single()).putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
+                }
+            }
+        }
+    }
+
+    @Test fun dialOutRefusedWhenTheGatewaySimIsMissing() {
+        dualSim(callSubscription = 2, slotOccupied = false)
+        mockConstruction(Bundle::class.java).use {
+            val outgoing = endpoint.dial("5551234567", Party(null))
+            drainMain()
+            assertEquals(LegState.ENDED, outgoing.state)
+            assertEquals(HangupCause.UNAVAILABLE, outgoing.endCause)
+            verify(telecom, never()).placeCall(any(Uri::class.java), any(Bundle::class.java))
+        }
     }
 
     @Test fun readinessLossClosesAudioAndRefusesLaterCompletion() {

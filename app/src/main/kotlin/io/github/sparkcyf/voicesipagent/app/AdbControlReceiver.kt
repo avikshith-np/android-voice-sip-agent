@@ -43,6 +43,7 @@ class AdbControlReceiver : BroadcastReceiver() {
                         domain = intent.getStringExtra("domain") ?: cur.domain,
                         inboundTarget = intent.getStringExtra("target") ?: cur.inboundTarget,
                         allowedPrefixes = intent.getStringExtra("prefixes") ?: cur.allowedPrefixes,
+                        simSlot = intent.getIntExtra("sim", cur.simSlot).coerceAtLeast(0),
                         audioMethod = intent.getIntExtra("audio_method", cur.audioMethod),
                         callAccess = intent.getIntExtra("call_access", cur.callAccess),
                     ),

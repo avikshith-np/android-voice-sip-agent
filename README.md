@@ -121,6 +121,7 @@ The handset microphone stays muted while bridging, so local listening does not e
 | User / password | Trunk credentials on the PBX |
 | Cellular inbound → SIP target | DID dialed on the PBX for incoming cellular calls; blank = the SIP user name |
 | Allowed dial-out prefixes | Comma-separated; empty = any number may be dialed out |
+| Gateway SIM slot | Dual-SIM phones: the 1-based SIM slot the gateway owns. Calls on other SIMs ring normally and are never bridged; dial-outs are placed on this SIM. Empty = any SIM. If the slot is empty or disabled, the gateway claims no calls |
 | Mute local call output | On: attempts to silence call output. Off: keeps normal call output for local listening. Applies from next call; the handset microphone stays muted. |
 
 TLS validates the server certificate chain and host name against the Android system CA store (TLS 1.2/1.3 only)
@@ -135,7 +136,8 @@ The app can also be driven over adb (the receiver requires the `DUMP` permission
 R=io.github.sparkcyf.voicesipagent/io.github.sparkcyf.voicesipagent.app.AdbControlReceiver
 adb shell am broadcast -n $R --es op provision --es server sip.example.org --ei port 5061 \
   --es transport tls --es srtp optional --es domain sip.example.org \
-  --es user android-gw --es password "'<secret>'" --es target android-gw   # only overwrites the given fields
+  --es user android-gw --es password "'<secret>'" --es target android-gw \
+  --ei sim 2   # only overwrites the given fields
 adb shell am broadcast -n $R --es op status            # printed to logcat
 adb shell am broadcast -n $R --es op takeover --ez on false
 adb shell am broadcast -n $R --es op earpiece-mute --ez on true
