@@ -338,8 +338,21 @@ class CellularEndpoint(
         }
     }
 
-    private fun phoneAccountFor(subscriptionId: Int): PhoneAccountHandle? =
-        runCatching { telephony.createForSubscriptionId(subscriptionId).phoneAccountHandle }.getOrNull()
+    /**
+     * The SIM's Telecom account, matched the same way incoming calls are: by mapping each
+     * call-capable account to its subscription. TelephonyManager.getPhoneAccountHandle() is
+     * only a fallback; on a Nothing Phone 3a (Android 16) it returns null for the app.
+     */
+    private fun phoneAccountFor(subscriptionId: Int): PhoneAccountHandle? {
+        val listed = runCatching {
+            telecom.callCapablePhoneAccounts.orEmpty().firstOrNull {
+                runCatching { telephony.getSubscriptionId(it) }.getOrNull() == subscriptionId
+            }
+        }.onFailure { log("listing call-capable accounts failed: ${it.javaClass.simpleName}") }.getOrNull()
+        return listed ?: runCatching { telephony.createForSubscriptionId(subscriptionId).phoneAccountHandle }
+            .onFailure { log("phone account lookup for subscription failed: ${it.javaClass.simpleName}") }
+            .getOrNull()
+    }
 
     private fun clearCalls(reason: String) {
         (legs.values + pending.map { it.leg }).distinct().forEach {

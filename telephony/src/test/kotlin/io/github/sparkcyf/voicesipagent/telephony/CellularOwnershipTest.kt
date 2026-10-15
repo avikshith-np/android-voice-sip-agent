@@ -269,6 +269,31 @@ class CellularOwnershipTest {
         }
     }
 
+    @Test fun dialOutUsesTheCallCapableAccountOfTheGatewaySim() {
+        simSlot = 2
+        val info = mock(SubscriptionInfo::class.java)
+        doReturn(2).`when`(info).subscriptionId
+        doReturn(info).`when`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
+        val sim1 = mock(PhoneAccountHandle::class.java)
+        val sim2 = mock(PhoneAccountHandle::class.java)
+        doReturn(listOf(sim1, sim2)).`when`(telecom).callCapablePhoneAccounts
+        doReturn(1).`when`(telephony).getSubscriptionId(sim1)
+        doReturn(2).`when`(telephony).getSubscriptionId(sim2)
+        mockStatic(SystemClock::class.java).use {
+            mockStatic(Uri::class.java).use { uris ->
+                mockConstruction(Bundle::class.java).use { bundles ->
+                    val number = "5551234567"
+                    val uri = mock(Uri::class.java)
+                    uris.`when`<Uri> { Uri.fromParts("tel", number, null) }.thenReturn(uri)
+                    endpoint.dial(number, Party(null))
+                    drainMain()
+                    verify(telecom).placeCall(eq(uri), any(Bundle::class.java))
+                    verify(bundles.constructed().single()).putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, sim2)
+                }
+            }
+        }
+    }
+
     @Test fun dialOutRefusedWhenTheGatewaySimIsMissing() {
         dualSim(callSubscription = 2, slotOccupied = false)
         mockConstruction(Bundle::class.java).use {
